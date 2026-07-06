@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.log
+
+# 数据文件
+dongmai_*.md
+dongmai_*.json
+dongmai_*.js
+
+# 系统文件
+.DS_Store
