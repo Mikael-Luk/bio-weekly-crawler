@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-动脉网情报爬虫 - Playwright 版
+动脉网情报爬虫 - Playwright 版（优化提取）
 """
 
 import asyncio
@@ -26,7 +26,7 @@ def save_as_markdown(articles, filename):
             if time_str:
                 f.write(f"🕐 {time_str}\n\n")
             if content:
-                f.write(f"{content}\n\n")
+                f.write(f"{content.strip()}\n\n")
             f.write("---\n\n")
         
         f.write(f"*报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n")
@@ -47,38 +47,44 @@ async def fetch_dongmai_playwright():
         print(f"🔍 正在加载列表页: {url}")
         
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="networkidle", timeout=60000)
             print("✅ 列表页加载完成")
             
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)  # 增加等待时间
             
             print("🔍 提取情报内容...")
             
             articles_data = await page.evaluate("""
                 () => {
                     const bodyText = document.body.innerText;
-                    const lines = bodyText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                    const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
                     const articles = [];
                     let current = null;
+                    
                     for (const line of lines) {
-                        if (/^\\d{1,2}:\\d{2}$/.test(line) || /^\\d{4}年\\d{2}月\\d{2}日/.test(line)) {
+                        // 匹配时间
+                        if (/^\d{1,2}:\d{2}$/.test(line) || /^\d{4}年\d{2}月\d{2}日/.test(line)) {
                             if (current && current.title) {
                                 articles.push(current);
                             }
-                            current = {
-                                time: line,
-                                title: '',
-                                content: ''
-                            };
-                        } else if (current) {
-                            const isTitle = line.startsWith('#') || 
-                                (line.length > 10 && line.length < 80 && 
-                                 !line.includes('，') && !line.includes('。') && 
-                                 !line.includes('、') && !line.includes('：'));
+                            current = { time: line, title: '', content: '' };
+                        } 
+                        else if (current) {
+                            // 判断是否是标题
+                            const isTitle = line.length < 85 && 
+                                           !line.includes('。') && 
+                                           !line.includes('，') && 
+                                           !line.includes('、') && 
+                                           !line.match(/^[a-zA-Z0-9?？�]+$/);
+                            
                             if (isTitle && !current.title) {
-                                current.title = line.replace(/^#\\s*/, '').trim();
+                                current.title = line.replace(/^#\s*/, '').trim();
                             } else {
-                                current.content += line + '\\n';
+                                // 清理乱码和问号
+                                const cleanLine = line.replace(/[?？�]+/g, ' ').trim();
+                                if (cleanLine.length > 8) {
+                                    current.content += cleanLine + '\n';
+                                }
                             }
                         }
                     }
@@ -100,10 +106,13 @@ async def fetch_dongmai_playwright():
                     "source": "动脉网"
                 })
             
-            md_filename = f"dongmai_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            # 保存文件
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            md_filename = f"dongmai_{timestamp}.md"
+            json_filename = f"dongmai_{timestamp}.json"
+            
             save_as_markdown(articles, md_filename)
             
-            json_filename = f"dongmai_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             with open(json_filename, "w", encoding="utf-8") as f:
                 json.dump(articles, f, ensure_ascii=False, indent=2)
             
