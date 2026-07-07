@@ -1,13 +1,15 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
 venv/
-*.log
+env/
+*.env
 
-# 数据文件
+# 临时文件
+*.log
 dongmai_*.md
 dongmai_*.json
-dongmai_*.js
 
-# 系统文件
+# OS
 .DS_Store
