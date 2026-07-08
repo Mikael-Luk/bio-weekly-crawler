@@ -1,116 +1,121 @@
 #!/usr/bin/env python3
 """
-动脉网情报爬虫 - Playwright 版（最终优化版）
+动脉网文章爬虫 - 可靠版（优化内容提取）
 """
-
 import asyncio
 import json
-import re
 from datetime import datetime
 from playwright.async_api import async_playwright
 
-def clean_content(text):
-    """清理内容中的页脚和垃圾信息"""
-    if not text:
-        return ""
-    # 移除常见页脚
-    text = re.sub(r'(关于我们|联系我们|友情链接|©|ICP备|公网安备|客服|意见反馈|全球产业链接|企业对接|在线|7x24H).*?$', '', text, flags=re.DOTALL | re.MULTILINE)
-    # 移除链接和多余符号
-    text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'[]+', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+async def fetch_dongmai_full(limit=5):
+    print(f"🚀 启动动脉网爬虫（抓取 {limit} 条完整文章）...")
+    articles = []
 
-def save_as_markdown(articles, filename):
-    """保存 Markdown"""
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(f"# 🏥 动脉网情报\n\n")
-        f.write(f"> 抓取时间: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n\n")
-        f.write(f"> 共 {len(articles)} 条情报\n\n")
-        f.write("---\n\n")
-        
-        for i, item in enumerate(articles, 1):
-            title = item.get("title", "无标题").strip()
-            time_str = item.get("time", "").strip()
-            content = clean_content(item.get("content", ""))
-            
-            if len(title) < 5:
-                continue
-                
-            f.write(f"## {i}. {title}\n\n")
-            if time_str:
-                f.write(f"🕐 {time_str}\n\n")
-            if content:
-                f.write(f"{content}\n\n")
-            f.write("---\n\n")
-        
-        f.write(f"*报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n")
-
-async def fetch_dongmai_playwright():
-    print("🔄 启动浏览器...")
-    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        page = await context.new_page()
-        
-        url = "https://www.vbdata.cn/intelList"
-        print(f"🔍 加载: {url}")
-        
-        try:
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            await asyncio.sleep(4)
-            
-            articles_data = await page.evaluate("""
-                () => {
-                    const bodyText = document.body.innerText;
-                    const lines = bodyText.split('\n').map(l => l.trim()).filter(l => l.length > 5);
-                    const articles = [];
-                    let current = null;
-                    for (const line of lines) {
-                        if (/^\d{1,2}:\d{2}$/.test(line) || /^\d{4}年\d{2}月\d{2}日/.test(line)) {
-                            if (current && current.title) articles.push(current);
-                            current = { time: line, title: '', content: '' };
-                        } else if (current) {
-                            const isTitle = line.length < 85 && !line.includes('。') && !line.includes('，') && !line.includes('、');
-                            if (isTitle && !current.title) {
-                                current.title = line.replace(/^#\s*/, '').trim();
-                            } else {
-                                current.content += line + '\n';
+        page = await browser.new_page()
+
+        list_url = "https://www.vbdata.cn/articleList?category=166"
+        await page.goto(list_url, wait_until="networkidle", timeout=90000)
+        await asyncio.sleep(5)
+
+        # 滚动加载更多文章
+        for _ in range(4):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(3)
+
+        # 提取文章链接（去重）
+        links = await page.evaluate("""
+            () => {
+                const links = [];
+                const seen = new Set();
+                document.querySelectorAll('a').forEach(a => {
+                    const href = a.href;
+                    const text = a.innerText.trim();
+                    if (href && href.includes('vbdata.cn') && text.length > 15 && !seen.has(href)) {
+                        seen.add(href);
+                        links.push({title: text, href: href});
+                    }
+                });
+                return links.slice(0, 15);
+            }
+        """)
+        print(f"找到 {len(links)} 条潜在文章链接")
+
+        # 进入每篇文章详情页
+        for i, item in enumerate(links[:limit], 1):
+            print(f"[{i}/{limit}] 抓取: {item['title'][:50]}...")
+
+            try:
+                # 打开详情页
+                await page.goto(item['href'], wait_until="networkidle", timeout=30000)
+                
+                # 等待正文内容加载（增加等待时间，确保动态内容渲染）
+                await asyncio.sleep(5) 
+
+                # 提取正文，优先使用更精确的选择器
+                content = await page.evaluate("""
+                    () => {
+                        // 更完善的选择器列表
+                        const selectors = [
+                            'article', 
+                            '.article-content', 
+                            '.content', 
+                            '.rich-text', 
+                            '.richText', 
+                            '.main-content',
+                            '.post-content',
+                            'main'
+                        ];
+                        for (let sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el) {
+                                const text = el.innerText.trim();
+                                if (text.length > 100) return text;
                             }
                         }
+                        // 若特定容器未命中，则返回 body 文本，并尽可能去除杂音
+                        let bodyText = document.body.innerText.trim();
+                        return bodyText;
                     }
-                    if (current && current.title) articles.push(current);
-                    return articles;
-                }
-            """)
-            
-            print(f"📰 提取到 {len(articles_data)} 条情报")
-            
-            articles = [{"title": item.get('title', '无标题')[:120], "time": item.get('time', ''), "content": item.get('content', ''), "source": "动脉网"} for item in articles_data]
-            
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            save_as_markdown(articles, f"dongmai_{timestamp}.md")
-            
-            with open(f"dongmai_{timestamp}.json", "w", encoding="utf-8") as f:
-                json.dump(articles, f, ensure_ascii=False, indent=2)
-            
-            print(f"✅ 文件已生成: dongmai_{timestamp}.md / .json")
-            return articles
-            
-        except Exception as e:
-            print(f"❌ 错误: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-        finally:
-            await browser.close()
+                """)
+
+                articles.append({
+                    "title": item['title'],
+                    "link": item['href'],
+                    "content": content.strip(),  # 全文保存，不做长度限制
+                    "source": "动脉网"
+                })
+                print(f"   ✅ 成功，内容长度: {len(articles[-1]['content'])} 字符")
+
+            except Exception as e:
+                print(f"   ❌ 抓取失败: {e}")
+                continue
+
+        await browser.close()
+
+    # 保存为 JSON 和 Markdown（全文）
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"dongmai_full_{timestamp}"
+
+    # 保存 JSON
+    with open(f"data/reports/{filename}.json", "w", encoding="utf-8") as f:
+        json.dump(articles, f, ensure_ascii=False, indent=2)
+
+    # 保存 Markdown（取消截断限制）
+    with open(f"data/reports/{filename}.md", "w", encoding="utf-8") as f:
+        f.write(f"# 🏥 动脉网文章详情\n\n> 抓取时间: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n\n")
+        for i, a in enumerate(articles, 1):
+            f.write(f"## {i}. {a['title']}\n\n")
+            f.write(f"🔗 {a['link']}\n\n")
+            f.write(f"{a['content']}\n\n")  # ✅ 此处不再截断，完整写入
+            f.write("---\n\n")
+
+    print(f"✅ 完成！共抓取 {len(articles)} 条完整文章（已保存全文）")
+    return articles
 
 async def main():
-    print("=" * 60)
-    print("🕷️ 动脉网情报爬虫")
-    print("=" * 60)
-    await fetch_dongmai_playwright()
+    await fetch_dongmai_full(limit=5)
 
 if __name__ == "__main__":
     asyncio.run(main())
