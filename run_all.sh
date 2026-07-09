@@ -1,66 +1,90 @@
 #!/bin/bash
-# ============================================================
-# 生物经济投融资周报 - 统一运行脚本
-# 打包上传版
-# ============================================================
+# =============================================
+# bio-weekly-crawler - 一键运行 + 分类同步到 NAS ‘动脉网’ 文件夹
+# =============================================
 
-echo "=========================================="
-echo "🚀 生物经济投融资周报 - 数据采集"
-echo "开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
-echo "=========================================="
+# 不要 set -e，避免 scp 无文件时脚本退出
+# set -e
 
-source ~/news_scraper/venv/bin/activate
+echo "🚀 开始执行 bio-weekly-crawler..."
 
-# ============================================================
-# 1. 动脉网 (P1)
-# ============================================================
-echo ""
-echo "📰 [1/5] 正在采集: 动脉网 (P1)..."
-cd ~/bio-weekly/src/dongmai
-python3 crawler.py
+# =============================================
+# 1. 确定项目路径
+# =============================================
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
-# ============================================================
-# 后续源...
-# ============================================================
+echo "📂 项目目录: $PROJECT_ROOT"
 
-# ============================================================
-# 打包并上传
-# ============================================================
-echo ""
-echo "📦 打包并上传所有报告到 NAS..."
-
-cd ~/bio-weekly
-
-# 检查是否有文件
-if find src -name "dongmai_*.md" -o -name "dongmai_*.json" | grep -q .; then
-    # 收集文件
-    mkdir -p temp_reports
-    find src -name "dongmai_*.md" -exec cp {} temp_reports/ \;
-    find src -name "dongmai_*.json" -exec cp {} temp_reports/ \;
-    
-    # 压缩
-    cd temp_reports
-    tar -czf ../reports.tar.gz *
-    cd ..
-    
-    # 上传压缩包
-    scp reports.tar.gz jichangtao@192.168.0.69:/volume1/docker/bio-weekly/data/reports/
-    
-    # 在 NAS 上解压并清理
-    ssh jichangtao@192.168.0.69 "cd /volume1/docker/bio-weekly/data/reports/ && tar -xzf reports.tar.gz && rm reports.tar.gz"
-    
-    # 清理本地
-    rm -rf temp_reports reports.tar.gz
-    find src -name "dongmai_*.md" -delete
-    find src -name "dongmai_*.json" -delete
-    
-    echo "✅ 上传完成"
+# =============================================
+# 2. 激活虚拟环境（使用项目内的 venv）
+# =============================================
+if [ -f "$PROJECT_ROOT/venv/bin/activate" ]; then
+    source "$PROJECT_ROOT/venv/bin/activate"
+elif [ -f "$HOME/news_scraper/venv/bin/activate" ]; then
+    source "$HOME/news_scraper/venv/bin/activate"
 else
-    echo "⚠️ 没有文件需要上传"
+    echo "❌ 找不到虚拟环境"
+    exit 1
+fi
+
+# =============================================
+# 3. 确保本地目录存在
+# =============================================
+mkdir -p data/reports
+
+# =============================================
+# 4. 运行爬虫（检查文件是否存在）
+# =============================================
+echo "🕷️ 1. 运行动脉网情报列表爬虫..."
+if [ -f "src/dongmai/crawler.py" ]; then
+    python src/dongmai/crawler.py
+else
+    echo "⚠️ 找不到 src/dongmai/crawler.py"
+fi
+
+# =============================================
+# 5. 同步到 NAS（只传存在的文件）
+# =============================================
+echo "📤 同步到 NAS..."
+
+# NAS 基础路径（确认实际路径）
+NAS_BASE="/volume1/docker/bio-weekly/data/reports"
+NAS_USER="jichangtao"
+NAS_HOST="192.168.0.69"
+
+# 创建 NAS 目录结构
+echo "📁 创建 NAS 目录..."
+ssh ${NAS_USER}@${NAS_HOST} "mkdir -p ${NAS_BASE}/动脉网/情报页 ${NAS_BASE}/动脉网/主页面"
+
+# 同步情报页文件
+echo "📄 同步情报页..."
+if ls data/reports/dongmai_intel_*.md 1> /dev/null 2>&1; then
+    scp data/reports/dongmai_intel_*.md ${NAS_USER}@${NAS_HOST}:${NAS_BASE}/动脉网/情报页/
+    echo "✅ 情报页上传完成"
+else
+    echo "⚠️ 没有情报页文件"
+fi
+
+# 同步文章页文件
+echo "📄 同步文章页..."
+if ls data/reports/dongmai_*.md 2>/dev/null | grep -v "dongmai_intel_" > /dev/null; then
+    scp data/reports/dongmai_*.md ${NAS_USER}@${NAS_HOST}:${NAS_BASE}/动脉网/主页面/ 2>/dev/null
+    echo "✅ 文章页上传完成"
+else
+    echo "⚠️ 没有文章页文件"
+fi
+
+# 同步 JSON 文件（可选）
+echo "📄 同步 JSON 备份..."
+if ls data/reports/dongmai_*.json 1> /dev/null 2>&1; then
+    scp data/reports/dongmai_*.json ${NAS_USER}@${NAS_HOST}:${NAS_BASE}/动脉网/ 2>/dev/null
+    echo "✅ JSON 备份上传完成"
+else
+    echo "⚠️ 没有 JSON 文件"
 fi
 
 echo ""
-echo "=========================================="
-echo "✅ 采集完成！"
-echo "结束时间: $(date '+%Y-%m-%d %H:%M:%S')"
-echo "=========================================="
+echo "🎉 完成！"
+echo "📅 $(date '+%Y-%m-%d %H:%M:%S')"
