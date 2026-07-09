@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-动脉网情报列表爬虫 - 过滤页脚版
+动脉网情报列表爬虫 - 情报页
+输出到: data/reports/动脉网/情报页/
 """
 
 import asyncio
@@ -8,9 +9,16 @@ import json
 import re
 from datetime import datetime
 from playwright.async_api import async_playwright
+import os
+
+# 输出目录
+OUTPUT_DIR = "data/reports/动脉网/情报页"
 
 async def fetch_dongmai_intel():
     print("🚀 启动动脉网情报列表爬虫...")
+    
+    # 确保目录存在
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -112,7 +120,10 @@ async def fetch_dongmai_intel():
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f"dongmai_intel_{timestamp}"
             
-            with open(f"data/reports/{filename}.md", "w", encoding="utf-8") as f:
+            md_path = f"{OUTPUT_DIR}/{filename}.md"
+            json_path = f"{OUTPUT_DIR}/{filename}.json"
+            
+            with open(md_path, "w", encoding="utf-8") as f:
                 f.write(f"# 🏥 动脉网情报列表\n\n")
                 f.write(f"> 抓取时间: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n\n")
                 f.write(f"> 共 {len(items)} 条情报\n\n")
@@ -131,7 +142,11 @@ async def fetch_dongmai_intel():
                     f.write(f"{content}\n\n")
                     f.write("---\n\n")
             
-            print(f"✅ 保存成功: data/reports/{filename}.md")
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False, indent=2)
+            
+            print(f"✅ Markdown: {md_path}")
+            print(f"✅ JSON: {json_path}")
             
         except Exception as e:
             print(f"❌ 错误: {e}")
