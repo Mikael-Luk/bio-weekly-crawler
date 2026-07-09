@@ -1,60 +1,128 @@
-import requests
-from datetime import datetime
-import json
-from bs4 import BeautifulSoup
+#!/usr/bin/env python3
+"""
+动脉网文章详情爬虫 - 主文章
+输出到: data/reports/动脉网/主文章/
+"""
 
-def fetch_dongmai_articles():
-    url = "https://www.vbdata.cn/articleList?category=166"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, "html.parser")
+import asyncio
+import json
+import re
+from datetime import datetime
+from playwright.async_api import async_playwright
+import os
+
+OUTPUT_DIR = "data/reports/动脉网/主文章"
+
+async def fetch_dongmai_full(limit=5):
+    print(f"🚀 启动动脉网文章爬虫（抓取 {limit} 条详情）...")
+    
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    articles = []
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
         
-        # 提取文章标题（根据页面结构调整选择器）
-        articles = []
+        list_url = "https://www.vbdata.cn/articleList?category=166"
+        await page.goto(list_url, wait_until="networkidle", timeout=90000)
+        await asyncio.sleep(5)
         
-        # 方法1：找所有 <a> 标签，标题在 <h2> 或 <h3> 里
-        for link in soup.find_all("a", href=True):
-            title = link.get_text(strip=True)
-            href = link["href"]
-            if title and len(title) > 10 and "/article/" in href:
+        for _ in range(4):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(3)
+        
+        links = await page.evaluate("""
+            () => {
+                const links = [];
+                const seen = new Set();
+                document.querySelectorAll('a').forEach(a => {
+                    const href = a.href;
+                    const text = a.innerText.trim();
+                    if (href && href.includes('vbdata.cn') && text.length > 15 && !seen.has(href)) {
+                        seen.add(href);
+                        links.push({title: text, href: href});
+                    }
+                });
+                return links.slice(0, 15);
+            }
+        """)
+        print(f"找到 {len(links)} 条潜在文章链接")
+        
+        for i, item in enumerate(links[:limit], 1):
+            print(f"[{i}/{limit}] 抓取: {item['title'][:50]}...")
+            try:
+                await page.goto(item['href'], wait_until="networkidle", timeout=30000)
+                await asyncio.sleep(5)
+                
+                content = await page.evaluate("""
+                    () => {
+                        const selectors = [
+                            'article', '.article-content', '.content',
+                            '.rich-text', '.richText', '.main-content',
+                            '.post-content', 'main'
+                        ];
+                        for (let sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el) {
+                                const text = el.innerText.trim();
+                                if (text.length > 100) return text;
+                            }
+                        }
+                        let bodyText = document.body.innerText.trim();
+                        // 移除页脚
+                        const footerKeywords = ['©', '渝ICP备', '友情链接', '关于我们', '联系电话'];
+                        for (const kw of footerKeywords) {
+                            if (bodyText.includes(kw)) {
+                                bodyText = bodyText.split(kw)[0].trim();
+                            }
+                        }
+                        return bodyText;
+                    }
+                """)
+
                 articles.append({
-                    "title": title,
-                    "url": href if href.startswith("http") else "https://www.vbdata.cn" + href
+                    "title": item['title'],
+                    "link": item['href'],
+                    "content": content.strip(),
+                    "source": "动脉网"
                 })
+                print(f"   ✅ 成功，内容长度: {len(articles[-1]['content'])} 字符")
+
+            except Exception as e:
+                print(f"   ❌ 抓取失败: {e}")
+                continue
+
+        await browser.close()
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"dongmai_full_{timestamp}"
+    
+    md_path = f"{OUTPUT_DIR}/{filename}.md"
+    json_path = f"{OUTPUT_DIR}/{filename}.json"
+    
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(f"# 🏥 动脉网文章详情\n\n")
+        f.write(f"> 抓取时间: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n\n")
+        f.write(f"> 共 {len(articles)} 篇文章\n\n")
+        f.write("---\n\n")
         
-        # 如果上面的方法没找到，用这个方法：找所有带标题样式的元素
-        if len(articles) == 0:
-            for h2 in soup.find_all(["h2", "h3"]):
-                title = h2.get_text(strip=True)
-                if title and len(title) > 10:
-                    # 找这个标题下面的链接
-                    link = h2.find("a")
-                    if link and link.get("href"):
-                        href = link["href"]
-                        articles.append({
-                            "title": title,
-                            "url": href if href.startswith("http") else "https://www.vbdata.cn" + href
-                        })
-        
-        return {
-            "source": "动脉网",
-            "status": resp.status_code,
-            "article_count": len(articles),
-            "articles": articles[:10],  # 只取前10条
-            "fetched_at": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {"source": "动脉网", "error": str(e)}
+        for i, a in enumerate(articles, 1):
+            f.write(f"## {i}. {a['title']}\n\n")
+            f.write(f"🔗 {a['link']}\n\n")
+            f.write(f"{a['content']}\n\n")
+            f.write("---\n\n")
+    
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(articles, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ 完成！共抓取 {len(articles)} 条完整文章")
+    print(f"📄 Markdown: {md_path}")
+    print(f"📁 JSON: {json_path}")
+    return articles
+
+async def main():
+    await fetch_dongmai_full(limit=5)
 
 if __name__ == "__main__":
-    result = fetch_dongmai_articles()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    
-    # 保存到文件
-    filename = f"dongmai_articles_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(filename, "w") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"\n✅ 结果已保存到: {filename}")
+    asyncio.run(main())
